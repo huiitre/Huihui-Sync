@@ -1,0 +1,4 @@
+config.json
+profiles/*.json
+!profiles/example.json
+logs/

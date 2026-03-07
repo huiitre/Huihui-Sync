@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "remote_base": "/data/sync/example",
+  "backup": true,
+  "sources": [
+    "~/.local/share/ExampleData"
+  ],
+  "exclude": [],
+  "post_pull": "",
+  "post_push": ""
+}
