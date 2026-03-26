@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/lib/log.sh"
 source "$SCRIPT_DIR/lib/lock.sh"
 source "$SCRIPT_DIR/lib/backup.sh"
 source "$SCRIPT_DIR/lib/sync.sh"
+source "$SCRIPT_DIR/lib/profile.sh"
 
 # Vérification des dépendances
 for dep in rsync ssh jq; do
@@ -17,9 +18,42 @@ done
 # Usage
 usage() {
   echo "Usage: huihuisync.sh [--verbose] <push|pull> <profile>"
-  echo "       huihuisync.sh push dbeaver"
-  echo "       huihuisync.sh --verbose pull dotfiles"
+  echo "       huihuisync.sh profile list [--verbose]"
+  echo ""
+  echo "       huihuisync push <profile>"
+  echo "       huihuisync --verbose pull <profile>"
+  echo "       huihuisync profile list"
+  echo "       huihuisync profile list --verbose"
   exit 1
+}
+
+# Identifiant unique de la machine
+get_machine_id() {
+  local machine_id
+  if [[ -f /etc/machine-id ]]; then
+    machine_id="$(cat /etc/machine-id)"
+  else
+    machine_id="unknown"
+  fi
+  echo "$(whoami)@$(hostname)-${machine_id}"
+}
+
+# Upload du fichier de profil sur le remote
+upload_profile() {
+  local remote_host="$1"
+  local remote_port="$2"
+  local remote_base="$3"
+  local profile_file="$4"
+  local machine_id="$5"
+  local profile_dir="$remote_base/profiles/$machine_id"
+
+  log_verbose "Upload profil : $profile_file → $remote_host:$profile_dir/"
+  ssh -p "$remote_port" "$remote_host" "mkdir -p '$profile_dir'"
+  rsync -az \
+    -e "ssh -p $remote_port" \
+    "$profile_file" \
+    "$remote_host:$profile_dir/" >> "$LOG_FILE" 2>&1
+  log_info "Profil uploadé : $profile_dir/$(basename "$profile_file")"
 }
 
 # Parse arguments
@@ -31,6 +65,18 @@ for arg in "$@"; do
     *) ARGS+=("$arg") ;;
   esac
 done
+
+[[ ${#ARGS[@]} -lt 1 ]] && usage
+
+# Commande profile
+if [[ "${ARGS[0]}" == "profile" ]]; then
+  [[ "${ARGS[1]:-}" == "list" ]] || usage
+  PROFILE_VERBOSE=false
+  [[ "$VERBOSE" == true || "${ARGS[2]:-}" == "--verbose" ]] && PROFILE_VERBOSE=true
+  profile_list "$PROFILE_VERBOSE"
+  exit 0
+fi
+
 
 [[ ${#ARGS[@]} -lt 2 ]] && usage
 
@@ -77,6 +123,7 @@ mapfile -t SOURCES < <(jq -r '.sources[]' "$PROFILE_FILE")
 mapfile -t EXCLUDES < <(jq -r '.exclude[] // empty' "$PROFILE_FILE")
 
 LOCK_FILE="$REMOTE_BASE/lock"
+MACHINE_ID="$(get_machine_id)"
 
 # Validation
 [[ -z "$REMOTE_HOST" ]] && { log_error "remote_host non configuré"; exit 1; }
@@ -84,6 +131,7 @@ LOCK_FILE="$REMOTE_BASE/lock"
 log_info "Action : $ACTION | Profil : $PROFILE | Remote : $REMOTE_HOST:$REMOTE_BASE"
 log_verbose "Port : $REMOTE_PORT | Lock timeout : ${LOCK_TIMEOUT}s | Backup : $BACKUP"
 log_verbose "Sources : ${SOURCES[*]}"
+log_verbose "Machine ID : $MACHINE_ID"
 [[ ${#EXCLUDES[@]} -gt 0 ]] && log_verbose "Exclusions : ${EXCLUDES[*]}"
 
 # Acquire lock
@@ -101,6 +149,7 @@ case "$ACTION" in
       eval "$POST_PUSH"
       log_info "post_push exécuté : $POST_PUSH"
     fi
+    upload_profile "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" "$PROFILE_FILE" "$MACHINE_ID"
     ;;
   pull)
     sync_pull "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" SOURCES EXCLUDES
@@ -109,6 +158,7 @@ case "$ACTION" in
       eval "$POST_PULL"
       log_info "post_pull exécuté : $POST_PULL"
     fi
+    upload_profile "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" "$PROFILE_FILE" "$MACHINE_ID"
     ;;
   *)
     usage
