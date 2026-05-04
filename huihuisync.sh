@@ -17,8 +17,13 @@ done
 
 # Usage
 usage() {
-  echo "Usage: huihuisync.sh [--verbose] <push|pull> <profile1> [profile2...]"
+  echo "Usage: huihuisync.sh [--verbose] <push|pull> <profile1|all> [profile2...]"
   echo "       huihuisync.sh profile list [--verbose]"
+  echo ""
+  echo "Exemples :"
+  echo "  huihuisync pull tabby datagrip"
+  echo "  huihuisync push all"
+  echo "  huihuisync --verbose pull all"
   exit 1
 }
 
@@ -167,7 +172,29 @@ fi
 [[ ${#ARGS[@]} -lt 2 ]] && usage
 
 ACTION="${ARGS[0]}"
-PROFILES=("${ARGS[@]:1}")
+PROFILES_ARGS=("${ARGS[@]:1}")
+PROFILES=()
+
+# Résolution des profils
+for P in "${PROFILES_ARGS[@]}"; do
+  if [[ "$P" == "all" ]]; then
+    for profile_file in "$SCRIPT_DIR/profiles"/*.json; do
+      [[ -f "$profile_file" ]] || continue
+      p_name="$(basename "$profile_file" .json)"
+      # On ne garde que les actifs pour 'all'
+      if [[ "$(jq -r '.enabled // false' "$profile_file")" == "true" ]]; then
+        PROFILES+=("$p_name")
+      fi
+    done
+  else
+    PROFILES+=("$P")
+  fi
+done
+
+# Suppression des doublons potentiels et tri
+if [[ ${#PROFILES[@]} -gt 0 ]]; then
+  mapfile -t PROFILES < <(printf "%s\n" "${PROFILES[@]}" | sort -u)
+fi
 
 # Init logs
 log_init

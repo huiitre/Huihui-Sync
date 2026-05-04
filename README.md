@@ -1,6 +1,6 @@
 # huihuisync
 
-Outil de synchronisation de fichiers/dossiers entre machines via rsync/SSH.
+Orchestrateur de synchronisation robuste via rsync/SSH avec gestion de lock et isolation d'erreurs.
 
 ## Dépendances
 
@@ -13,93 +13,75 @@ Fedora : `sudo dnf install rsync jq`
 ## Installation
 
 ```bash
-git clone <repo> ~/huihuisync
-chmod +x ~/huihuisync/huihuisync.sh
+git clone <repo> ~/Huihui-Sync
+chmod +x ~/Huihui-Sync/huihuisync.sh
 ```
 
-Copier et remplir la config :
+### Configuration globale
 
 ```bash
-cp ~/huihuisync/config.example.json ~/huihuisync/config.json
+cp ~/Huihui-Sync/config.example.json ~/Huihui-Sync/config.json
 ```
 
-Ajouter dans `~/.bashrc.d/30-aliases.sh` (ou `~/.bashrc`) :
+### Alias recommandé
 
 ```bash
-alias huihuisync='bash ~/huihuisync/huihuisync.sh'
+alias huihuisync='bash ~/Huihui-Sync/huihuisync.sh'
 ```
 
-## Configuration
+## Configuration des profils
 
-### config.json
-
-Config globale, à remplir sur chaque machine. Ne pas committer ce fichier.
-
-```json
-{
-  "remote_host": "user@host",
-  "remote_port": 22,
-  "lock_timeout": 30
-}
-```
-
-### profiles/
-
-Créer un fichier `<nom>.json` par profil à synchroniser. Les fichiers de profil ne sont pas versionnés (sauf `example.json`).
+Les profils sont définis dans `profiles/*.json`.
 
 ```json
 {
   "enabled": true,
-  "remote_base": "/data/sync/example",
+  "remote_base": "/data/sync/tabby",
   "backup": true,
   "sources": [
-    "~/.local/share/ExampleData"
+    "~/.config/tabby"
   ],
-  "exclude": [],
-  "post_pull": "",
+  "exclude": ["*.log", "Cache/"],
+  "post_pull": "systemctl --user restart tabby.service",
   "post_push": ""
 }
 ```
 
-| Champ | Description |
-|---|---|
-| `enabled` | `true` pour activer le profil. Absent ou `false` = ignoré. |
-| `remote_base` | Chemin de base sur le serveur distant |
-| `backup` | Crée une archive tar.gz avant chaque push |
-| `sources` | Fichiers ou dossiers à synchroniser |
-| `exclude` | Patterns à exclure (rsync) |
-| `post_pull` | Commande exécutée après un pull (ex: `source ~/.bashrc`) |
-| `post_push` | Commande exécutée après un push |
-
-Les champs `remote_host` et `remote_port` sont optionnels dans le profil — ils surchargent la config globale si présents.
-
 ## Usage
 
+### Synchronisation simple
 ```bash
-huihuisync push dbeaver
-huihuisync pull dbeaver
-huihuisync --verbose push dotfiles
-huihuisync pull dotfiles
+huihuisync pull datagrip
+huihuisync push dotfiles
+```
+
+### Synchronisation multiple
+Le script enchaîne les profils et continue même en cas d'erreur sur l'un d'eux.
+```bash
+huihuisync pull tabby datagrip dotfiles
+```
+
+### Synchronisation globale
+Synchronise tous les profils ayant `"enabled": true`.
+```bash
+huihuisync pull all
+huihuisync push all
+```
+
+### Liste des profils
+```bash
+huihuisync profile list
+huihuisync profile list --verbose
 ```
 
 ## Logs
 
-Les logs sont écrits dans `logs/huihuisync.log` à la racine du projet.
+Localisés dans `logs/huihuisync.log`.  
+Utilisez `--verbose` pour le détail des transferts rsync.
 
-Par défaut : messages essentiels (début, fin, statut).  
-Avec `--verbose` : détails rsync, commandes SSH, chaque étape.
+## Architecture V2
 
-## Intégration .desktop
-
-```
-Exec=/bin/bash -c '/home/<user>/huihuisync/huihuisync.sh pull dbeaver; dbeaver-ce %U; /home/<user>/huihuisync/huihuisync.sh push dbeaver'
-```
-
-## Structure remote
-
-```
-/data/sync/<profil>/
-├── current/        # données actuelles
-├── backups/        # archives tar.gz horodatées
-└── lock            # fichier de lock temporaire
-```
+- **Isolation** : Chaque profil est traité de manière autonome. Un échec sur un profil n'arrête pas la chaîne.
+- **Locking** : Verrouillage spécifique par profil sur le serveur distant.
+- **Staging Systemd** : (En cours) Les fichiers systemd synchronisés sont isolés pour vérification manuelle avant application.
+- **Master Orchestrator** : Conçu pour être piloté par une unité systemd unique gérant le cycle de vie startup/shutdown.
