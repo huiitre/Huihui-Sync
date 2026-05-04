@@ -17,13 +17,8 @@ done
 
 # Usage
 usage() {
-  echo "Usage: huihuisync.sh [--verbose] <push|pull> <profile>"
+  echo "Usage: huihuisync.sh [--verbose] <push|pull> <profile1> [profile2...]"
   echo "       huihuisync.sh profile list [--verbose]"
-  echo ""
-  echo "       huihuisync push <profile>"
-  echo "       huihuisync --verbose pull <profile>"
-  echo "       huihuisync profile list"
-  echo "       huihuisync profile list --verbose"
   exit 1
 }
 
@@ -56,6 +51,98 @@ upload_profile() {
   log_info "Profil uploadé : $profile_dir/$(basename "$profile_file")"
 }
 
+run_profile() {
+  local action="$1"
+  local profile="$2"
+  local profile_file="$SCRIPT_DIR/profiles/${profile}.json"
+  local config_file="$SCRIPT_DIR/config.json"
+
+  log_info "--- Début profil : $profile ---"
+
+  # Vérification des fichiers
+  [[ -f "$config_file" ]]  || { log_error "config.json introuvable"; return 1; }
+  [[ -f "$profile_file" ]] || { log_error "Profil '$profile' introuvable"; return 1; }
+
+  # Lecture config globale
+  local remote_host remote_port lock_timeout
+  remote_host="$(jq -r '.remote_host' "$config_file")"
+  remote_port="$(jq -r '.remote_port' "$config_file")"
+  lock_timeout="$(jq -r '.lock_timeout' "$config_file")"
+
+  # Surcharge par profil si présent
+  local profile_host profile_port
+  profile_host="$(jq -r '.remote_host // empty' "$profile_file")"
+  profile_port="$(jq -r '.remote_port // empty' "$profile_file")"
+  [[ -n "$profile_host" ]] && remote_host="$profile_host"
+  [[ -n "$profile_port" ]] && remote_port="$profile_port"
+
+  # Vérification enabled
+  local enabled
+  enabled="$(jq -r '.enabled // false' "$profile_file")"
+  if [[ "$enabled" != "true" ]]; then
+    log_info "Profil '$profile' désactivé (enabled: false). Ignoré."
+    return 0
+  fi
+
+  # Lecture profil
+  local remote_base backup post_push post_pull
+  remote_base="$(jq -r '.remote_base' "$profile_file")"
+  backup="$(jq -r '.backup' "$profile_file")"
+  post_push="$(jq -r '.post_push // empty' "$profile_file")"
+  post_pull="$(jq -r '.post_pull // empty' "$profile_file")"
+  
+  local sources excludes
+  mapfile -t sources < <(jq -r '.sources[]' "$profile_file")
+  mapfile -t excludes < <(jq -r '.exclude[] // empty' "$profile_file")
+
+  local lock_file="$remote_base/lock"
+  local machine_id
+  machine_id="$(get_machine_id)"
+
+  # Validation
+  [[ -z "$remote_host" ]] && { log_error "remote_host non configuré"; return 1; }
+
+  log_info "Action : $action | Profil : $profile | Remote : $remote_host:$remote_base"
+  
+  # Acquire lock
+  if ! lock_acquire "$remote_host" "$remote_port" "$lock_file" "$lock_timeout"; then
+    log_error "Impossible d'acquérir le lock pour le profil '$profile'"
+    return 1
+  fi
+
+  local status=0
+  case "$action" in
+    push)
+      [[ "$backup" == "true" ]] && backup_remote "$remote_host" "$remote_port" "$remote_base" "$profile"
+      sync_push "$remote_host" "$remote_port" "$remote_base" sources excludes
+      if [[ -n "$post_push" ]]; then
+        log_verbose "Exécution post_push : $post_push"
+        eval "$post_push"
+      fi
+      upload_profile "$remote_host" "$remote_port" "$remote_base" "$profile_file" "$machine_id"
+      ;;
+    pull)
+      sync_pull "$remote_host" "$remote_port" "$remote_base" sources excludes
+      if [[ -n "$post_pull" ]]; then
+        log_verbose "Exécution post_pull : $post_pull"
+        eval "$post_pull"
+      fi
+      upload_profile "$remote_host" "$remote_port" "$remote_base" "$profile_file" "$machine_id"
+      ;;
+  esac
+  status=$?
+
+  lock_release "$remote_host" "$remote_port" "$lock_file"
+  
+  if [[ $status -eq 0 ]]; then
+    log_info "--- Fin profil : $profile (OK) ---"
+  else
+    log_error "--- Fin profil : $profile (ÉCHEC) ---"
+  fi
+  
+  return $status
+}
+
 # Parse arguments
 VERBOSE=false
 ARGS=()
@@ -77,92 +164,17 @@ if [[ "${ARGS[0]}" == "profile" ]]; then
   exit 0
 fi
 
-
 [[ ${#ARGS[@]} -lt 2 ]] && usage
 
 ACTION="${ARGS[0]}"
-PROFILE="${ARGS[1]}"
-PROFILE_FILE="$SCRIPT_DIR/profiles/${PROFILE}.json"
-CONFIG_FILE="$SCRIPT_DIR/config.json"
+PROFILES=("${ARGS[@]:1}")
 
 # Init logs
 log_init
 
-log_verbose "VERBOSE activé"
-log_verbose "Lecture config : $CONFIG_FILE"
-log_verbose "Lecture profil : $PROFILE_FILE"
+GLOBAL_STATUS=0
+for P in "${PROFILES[@]}"; do
+  run_profile "$ACTION" "$P" || GLOBAL_STATUS=1
+done
 
-# Vérification des fichiers
-[[ -f "$CONFIG_FILE" ]]  || { log_error "config.json introuvable"; exit 1; }
-[[ -f "$PROFILE_FILE" ]] || { log_error "Profil '$PROFILE' introuvable"; exit 1; }
-
-# Lecture config globale
-REMOTE_HOST="$(jq -r '.remote_host' "$CONFIG_FILE")"
-REMOTE_PORT="$(jq -r '.remote_port' "$CONFIG_FILE")"
-LOCK_TIMEOUT="$(jq -r '.lock_timeout' "$CONFIG_FILE")"
-
-# Surcharge par profil si présent
-PROFILE_HOST="$(jq -r '.remote_host // empty' "$PROFILE_FILE")"
-PROFILE_PORT="$(jq -r '.remote_port // empty' "$PROFILE_FILE")"
-[[ -n "$PROFILE_HOST" ]] && REMOTE_HOST="$PROFILE_HOST"
-[[ -n "$PROFILE_PORT" ]] && REMOTE_PORT="$PROFILE_PORT"
-
-# Vérification enabled
-ENABLED="$(jq -r '.enabled // false' "$PROFILE_FILE")"
-if [[ "$ENABLED" != "true" ]]; then
-  log_info "Profil '$PROFILE' désactivé (enabled: false). Ignoré."
-  exit 0
-fi
-
-# Lecture profil
-REMOTE_BASE="$(jq -r '.remote_base' "$PROFILE_FILE")"
-BACKUP="$(jq -r '.backup' "$PROFILE_FILE")"
-POST_PUSH="$(jq -r '.post_push // empty' "$PROFILE_FILE")"
-POST_PULL="$(jq -r '.post_pull // empty' "$PROFILE_FILE")"
-mapfile -t SOURCES < <(jq -r '.sources[]' "$PROFILE_FILE")
-mapfile -t EXCLUDES < <(jq -r '.exclude[] // empty' "$PROFILE_FILE")
-
-LOCK_FILE="$REMOTE_BASE/lock"
-MACHINE_ID="$(get_machine_id)"
-
-# Validation
-[[ -z "$REMOTE_HOST" ]] && { log_error "remote_host non configuré"; exit 1; }
-
-log_info "Action : $ACTION | Profil : $PROFILE | Remote : $REMOTE_HOST:$REMOTE_BASE"
-log_verbose "Port : $REMOTE_PORT | Lock timeout : ${LOCK_TIMEOUT}s | Backup : $BACKUP"
-log_verbose "Sources : ${SOURCES[*]}"
-log_verbose "Machine ID : $MACHINE_ID"
-[[ ${#EXCLUDES[@]} -gt 0 ]] && log_verbose "Exclusions : ${EXCLUDES[*]}"
-
-# Acquire lock
-lock_acquire "$REMOTE_HOST" "$REMOTE_PORT" "$LOCK_FILE" "$LOCK_TIMEOUT" || exit 1
-
-# Cleanup lock en cas d'interruption
-trap 'lock_release "$REMOTE_HOST" "$REMOTE_PORT" "$LOCK_FILE"' EXIT
-
-case "$ACTION" in
-  push)
-    [[ "$BACKUP" == "true" ]] && backup_remote "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" "$PROFILE"
-    sync_push "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" SOURCES EXCLUDES
-    if [[ -n "$POST_PUSH" ]]; then
-      log_verbose "Exécution post_push : $POST_PUSH"
-      eval "$POST_PUSH"
-      log_info "post_push exécuté : $POST_PUSH"
-    fi
-    upload_profile "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" "$PROFILE_FILE" "$MACHINE_ID"
-    ;;
-  pull)
-    sync_pull "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" SOURCES EXCLUDES
-    if [[ -n "$POST_PULL" ]]; then
-      log_verbose "Exécution post_pull : $POST_PULL"
-      eval "$POST_PULL"
-      log_info "post_pull exécuté : $POST_PULL"
-    fi
-    upload_profile "$REMOTE_HOST" "$REMOTE_PORT" "$REMOTE_BASE" "$PROFILE_FILE" "$MACHINE_ID"
-    ;;
-  *)
-    usage
-    ;;
-esac
-
-log_info "Terminé."
+exit $GLOBAL_STATUS
