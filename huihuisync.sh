@@ -18,12 +18,24 @@ done
 # Usage
 usage() {
   echo "Usage: huihuisync.sh [--verbose] <push|pull> <profile1|all> [profile2...]"
-  echo "       huihuisync.sh profile list [--verbose]"
+  echo "       huihuisync.sh profile <list|name> [--verbose] [--sync]"
+  echo "       huihuisync.sh profile <enable|disable> <name>"
+  echo ""
+  echo "Commandes :"
+  echo "  push/pull        Synchronise les données (local <-> remote)"
+  echo "  profile list     Liste tous les profils"
+  echo "  profile <name>   Affiche les détails d'un profil spécifique"
+  echo "  profile enable   Active un profil"
+  echo "  profile disable  Désactive un profil"
+  echo ""
+  echo "Options :"
+  echo "  --verbose        Détails rsync et contenu des profils"
+  echo "  --sync           Vérification du statut NAS (Metadata)"
   echo ""
   echo "Exemples :"
-  echo "  huihuisync pull tabby datagrip"
-  echo "  huihuisync push all"
-  echo "  huihuisync --verbose pull all"
+  echo "  huihuisync pull all"
+  echo "  huihuisync profile list --sync"
+  echo "  huihuisync profile gemini-cli disable"
   exit 1
 }
 
@@ -120,19 +132,58 @@ run_profile() {
     push)
       [[ "$backup" == "true" ]] && backup_remote "$remote_host" "$remote_port" "$remote_base" "$profile"
       sync_push "$remote_host" "$remote_port" "$remote_base" sources excludes
-      if [[ -n "$post_push" ]]; then
-        log_verbose "Exécution post_push : $post_push"
-        eval "$post_push"
+      status=$?
+      if [[ $status -eq 0 ]]; then
+        if [[ -n "$post_push" ]]; then
+          log_verbose "Exécution post_push : $post_push"
+          eval "$post_push"
+        fi
+        upload_profile "$remote_host" "$remote_port" "$remote_base" "$profile_file" "$machine_id"
+        # --- MISE À JOUR STATE CENTRALISÉ ---
+        local ts=$(date +%s)
+        local remote_state_dir=$(dirname "$remote_base")
+        local remote_state_file="$remote_state_dir/.huihuisync_state.json"
+        local local_state_file="$SCRIPT_DIR/profiles/.sync_state.json"
+
+        # Update NAS (plus robuste : on met à jour localement puis on écrase le remote)
+        log_verbose "Mise à jour index NAS : $remote_state_file"
+        
+        # 1. On récupère l'état actuel du NAS (ou {} si vide)
+        local current_remote_state
+        current_remote_state=$(ssh -p "$remote_port" "$remote_host" "cat '$remote_state_file' 2>/dev/null" || echo "{}")
+        [[ -z "$current_remote_state" ]] && current_remote_state="{}"
+        
+        # 2. On le met à jour localement avec jq
+        local new_remote_state
+        new_remote_state=$(echo "$current_remote_state" | jq -c ".[\"$profile\"] = {\"machine\":\"$machine_id\", \"timestamp\":$ts}")
+        
+        # 3. On réécrit le fichier sur le NAS
+        ssh -p "$remote_port" "$remote_host" "echo '$new_remote_state' > '$remote_state_file'"
+        
+        # Update Local
+        [[ -f "$local_state_file" ]] || echo "{}" > "$local_state_file"
+        jq ".[\"$profile\"] = $ts" "$local_state_file" > "$local_state_file.tmp" && mv "$local_state_file.tmp" "$local_state_file"
       fi
-      upload_profile "$remote_host" "$remote_port" "$remote_base" "$profile_file" "$machine_id"
       ;;
     pull)
       sync_pull "$remote_host" "$remote_port" "$remote_base" sources excludes
-      if [[ -n "$post_pull" ]]; then
-        log_verbose "Exécution post_pull : $post_pull"
-        eval "$post_pull"
+      status=$?
+      if [[ $status -eq 0 ]]; then
+        if [[ -n "$post_pull" ]]; then
+          log_verbose "Exécution post_pull : $post_pull"
+          eval "$post_pull"
+        fi
+        upload_profile "$remote_host" "$remote_port" "$remote_base" "$profile_file" "$machine_id"
+        # --- MISE À JOUR STATE CENTRALISÉ ---
+        local remote_state_dir=$(dirname "$remote_base")
+        local remote_state_file="$remote_state_dir/.huihuisync_state.json"
+        local local_state_file="$SCRIPT_DIR/profiles/.sync_state.json"
+
+        log_verbose "Alignement index local depuis NAS"
+        local remote_ts=$(ssh -p "$remote_port" "$remote_host" "jq -r '.[\"$profile\"].timestamp // 0' '$remote_state_file' 2>/dev/null || echo 0")
+        [[ -f "$local_state_file" ]] || echo "{}" > "$local_state_file"
+        jq ".[\"$profile\"] = $remote_ts" "$local_state_file" > "$local_state_file.tmp" && mv "$local_state_file.tmp" "$local_state_file"
       fi
-      upload_profile "$remote_host" "$remote_port" "$remote_base" "$profile_file" "$machine_id"
       ;;
   esac
   status=$?
@@ -150,10 +201,12 @@ run_profile() {
 
 # Parse arguments
 VERBOSE=false
+SYNC_CHECK=false
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --verbose) VERBOSE=true ;;
+    --sync) SYNC_CHECK=true ;;
     *) ARGS+=("$arg") ;;
   esac
 done
@@ -162,10 +215,24 @@ done
 
 # Commande profile
 if [[ "${ARGS[0]}" == "profile" ]]; then
-  [[ "${ARGS[1]:-}" == "list" ]] || usage
-  PROFILE_VERBOSE=false
-  [[ "$VERBOSE" == true || "${ARGS[2]:-}" == "--verbose" ]] && PROFILE_VERBOSE=true
-  profile_list "$PROFILE_VERBOSE"
+  CMD="${ARGS[1]:-}"
+  TARGET="${ARGS[2]:-}"
+  
+  case "$CMD" in
+    enable)
+      [[ -z "$TARGET" ]] && usage
+      profile_set_enabled "$TARGET" "true"
+      ;;
+    disable)
+      [[ -z "$TARGET" ]] && usage
+      profile_set_enabled "$TARGET" "false"
+      ;;
+    list|*)
+      # Si c'est 'list' ou un nom de profil
+      [[ -z "$CMD" ]] && usage
+      profile_list "$CMD" "$VERBOSE" "$SYNC_CHECK"
+      ;;
+  esac
   exit 0
 fi
 

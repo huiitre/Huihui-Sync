@@ -1,4 +1,5 @@
 config.json
 profiles/*.json
 !profiles/example.json
+profiles/.state/
 logs/
