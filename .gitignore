@@ -3,3 +3,4 @@ profiles/*.json
 !profiles/example.json
 profiles/.state/
 logs/
+.update_state

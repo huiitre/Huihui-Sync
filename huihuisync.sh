@@ -9,6 +9,10 @@ source "$SCRIPT_DIR/lib/lock.sh"
 source "$SCRIPT_DIR/lib/backup.sh"
 source "$SCRIPT_DIR/lib/sync.sh"
 source "$SCRIPT_DIR/lib/profile.sh"
+source "$SCRIPT_DIR/lib/update.sh"
+
+# Vérification des mises à jour
+update_check "$SCRIPT_DIR"
 
 # Vérification des dépendances
 for dep in rsync ssh jq; do
