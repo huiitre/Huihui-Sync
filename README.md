@@ -2,6 +2,8 @@
 
 Orchestrateur de synchronisation robuste via rsync/SSH avec gestion de lock et isolation d'erreurs.
 
+> Ce dépôt GitHub est un miroir en lecture seule. Le développement se fait sur une instance GitLab privée.
+
 ## Dépendances
 
 - `rsync`
