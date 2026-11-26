@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "remote_base": "/data/sync/example",
   "backup": true,
   "sources": [
