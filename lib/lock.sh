@@ -11,7 +11,7 @@ lock_acquire() {
 
   log_verbose "Vérification lock : $lock_file"
 
-  while ssh -p "$remote_port" "$remote_host" "[ -f '$lock_file' ]" 2>/dev/null; do
+  while ssh "${SSH_OPTS[@]}" -p "$remote_port" "$remote_host" "[ -f '$lock_file' ]" 2>/dev/null; do
     if (( elapsed >= timeout )); then
       log_error "Timeout : lock présent depuis ${timeout}s sur $lock_file"
       return 1
@@ -23,7 +23,10 @@ lock_acquire() {
 
   local lock_dir
   lock_dir="$(dirname "$lock_file")"
-  ssh -p "$remote_port" "$remote_host" "mkdir -p '$lock_dir' && echo '$(hostname) $(date +%Y%m%d_%H%M%S)' > '$lock_file'"
+  if ! ssh "${SSH_OPTS[@]}" -p "$remote_port" "$remote_host" "mkdir -p '$lock_dir' && echo '$(hostname) $(date +%Y%m%d_%H%M%S)' > '$lock_file'"; then
+    log_error "Création du lock impossible (NAS injoignable ?) : $lock_file"
+    return 1
+  fi
   log_verbose "Lock créé : $lock_file"
 }
 
@@ -34,6 +37,6 @@ lock_release() {
   local remote_port="$2"
   local lock_file="$3"
 
-  ssh -p "$remote_port" "$remote_host" "rm -f '$lock_file'"
+  ssh "${SSH_OPTS[@]}" -p "$remote_port" "$remote_host" "rm -f '$lock_file'"
   log_verbose "Lock supprimé : $lock_file"
 }

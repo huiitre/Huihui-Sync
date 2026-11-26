@@ -4,3 +4,4 @@ profiles/*.json
 profiles/.state/
 logs/
 .update_state
+.watch/
