@@ -61,7 +61,7 @@ profile_list() {
       if [[ -n "$sample_base" ]]; then
         local remote_state_file="$(dirname "$sample_base")/.huihuisync_state.json"
         log_verbose "Récupération index distant ($h)..."
-        REMOTE_STATES["$h"]=$(ssh -p "$port" "$h" "cat '$remote_state_file' 2>/dev/null || echo '{}'")
+        REMOTE_STATES["$h"]=$(ssh "${SSH_OPTS[@]}" -p "$port" "$h" "cat '$remote_state_file' 2>/dev/null || echo '{}'")
       fi
     done
   fi
@@ -72,6 +72,7 @@ profile_list() {
 
   echo ""
   printf "${bold}huihuisync${reset}  ${dim}$(whoami)@$(hostname)${reset}\n"
+  printf "${dim}watch : %s${reset}\n" "$(watch_state_label)"
   echo ""
 
   for profile_file in "$profiles_dir"/*.json; do
@@ -119,11 +120,21 @@ profile_list() {
       fi
     fi
 
+    # Auto-push : actif (délai), ignoré si délai < 5 s, et modifications en attente
+    local auto_info="" auto_delay auto_rc=0
+    auto_delay="$(profile_auto_push_delay "$profile_file")" || auto_rc=$?
+    if [[ $auto_rc -eq 0 ]]; then
+      auto_info=" ${cyan}[auto ${auto_delay}s]${reset}"
+    elif [[ $auto_rc -eq 2 ]]; then
+      auto_info=" ${red}[auto ignoré : délai ${auto_delay}s < ${AUTO_PUSH_MIN_DELAY}s]${reset}"
+    fi
+    pending_exists "$name" && auto_info+=" ${orange}[en attente de push]${reset}"
+
     if [[ "$enabled" == "true" ]]; then
       (( active++ )) || true
-      printf "  ${dot_color}●${reset} %-20s ${dim}%-30s${reset}%b" "$name" "$remote_base" "$status_info"
+      printf "  ${dot_color}●${reset} %-20s ${dim}%-30s${reset}%b%b" "$name" "$remote_base" "$status_info" "$auto_info"
     else
-      printf "  ${dot_color}●${reset} %-20s ${dim}%-30s${reset}" "$name" "$remote_base"
+      printf "  ${dot_color}●${reset} %-20s ${dim}%-30s${reset}%b" "$name" "$remote_base" "$auto_info"
     fi
 
     if [[ "$verbose" == true ]]; then
